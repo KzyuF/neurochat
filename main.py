@@ -4,7 +4,7 @@ import random
 from datetime import datetime
 from pathlib import Path
 
-from telethon import TelegramClient, events, functions
+from telethon import TelegramClient, events, functions, utils
 from telethon.errors import (
     FloodWaitError, ChatWriteForbiddenError,
     UserAlreadyParticipantError, ChannelPrivateError, InviteHashExpiredError,
@@ -80,9 +80,10 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
             except UserAlreadyParticipantError:
                 log.info("Уже в группе обсуждения канала %s", channel)
 
-            channel_map[entity.id] = (channel, linked_chat_id)
+            peer_id = utils.get_peer_id(entity)
+            channel_map[peer_id] = (channel, linked_chat_id)
             channel_entities.append(entity)
-            log.info("Канал %s (id=%d) -> группа обсуждения id=%d", channel, entity.id, linked_chat_id)
+            log.info("Канал %s (peer_id=%d, id=%d) -> группа обсуждения id=%d", channel, peer_id, entity.id, linked_chat_id)
 
         except FloodWaitError as e:
             log.warning("FloodWait при вступлении: ждём %d сек", e.seconds)
