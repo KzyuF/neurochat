@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import random
 from datetime import datetime
@@ -31,6 +32,21 @@ last_reset_date = datetime.now().date()
 
 # channel entity id -> (channel username, discussion group id)
 channel_map: dict[int, tuple[str, int]] = {}
+
+STATS_FILE = Path(__file__).parent / "stats.json"
+
+
+def load_stats() -> dict:
+    if STATS_FILE.exists():
+        try:
+            return json.loads(STATS_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, Exception):
+            pass
+    return {"today": "", "today_count": 0, "total_count": 0, "last_comment": ""}
+
+
+def save_stats(stats: dict):
+    STATS_FILE.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def load_channels() -> list[str]:
@@ -209,6 +225,16 @@ async def main():
                 "Комментарий опубликован в [%s] (%d/%d за день)",
                 chat_title, comments_today, MAX_COMMENTS_PER_DAY,
             )
+            # Update stats
+            stats = load_stats()
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            if stats.get("today") != today_str:
+                stats["today"] = today_str
+                stats["today_count"] = 0
+            stats["today_count"] += 1
+            stats["total_count"] = stats.get("total_count", 0) + 1
+            stats["last_comment"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            save_stats(stats)
         except FloodWaitError as e:
             log.warning("FloodWait: ждём %d сек", e.seconds)
             await asyncio.sleep(e.seconds)
