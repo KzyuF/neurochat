@@ -12,6 +12,7 @@ from telethon.errors import (
 )
 from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest
 from groq import Groq
+import httpx
 
 from config import (
     API_ID, API_HASH, GROQ_API_KEY, GROQ_MODEL,
@@ -26,6 +27,9 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 groq_client = Groq(api_key=GROQ_API_KEY)
+
+BOT_TOKEN = "8398181888:AAGRkEhnJv1AcFFyiUBtnKTMN04pB0eLJwo"
+ADMIN_ID = 706575799
 
 comments_today = 0
 last_reset_date = datetime.now().date()
@@ -47,6 +51,18 @@ def load_stats() -> dict:
 
 def save_stats(stats: dict):
     STATS_FILE.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+async def notify_admin(text: str):
+    try:
+        async with httpx.AsyncClient() as http:
+            await http.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": ADMIN_ID, "text": text, "parse_mode": "HTML"},
+                timeout=10,
+            )
+    except Exception as e:
+        log.error("Ошибка отправки уведомления админу: %s", e)
 
 
 def load_channels() -> list[str]:
@@ -189,6 +205,7 @@ async def main():
         chat = await event.get_chat()
         chat_title = getattr(chat, "title", str(chat.id))
         log.info("Новый пост в [%s]: %s", chat_title, post_text[:80])
+        await notify_admin(f"📨 Новый пост в [{chat_title}]:\n{post_text[:100]}")
 
         # Look up discussion group by channel entity id
         mapping = channel_map.get(event.chat_id)
@@ -203,6 +220,7 @@ async def main():
             log.info("Сгенерирован комментарий: %s", comment[:80])
         except Exception as e:
             log.error("Ошибка генерации комментария: %s", e)
+            await notify_admin(f"❌ Ошибка: {e}")
             return
 
         delay = random.randint(MIN_DELAY, MAX_DELAY)
@@ -235,15 +253,22 @@ async def main():
             stats["total_count"] = stats.get("total_count", 0) + 1
             stats["last_comment"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             save_stats(stats)
+            await notify_admin(
+                f"✅ Комментарий опубликован в [{chat_title}] ({comments_today}/{MAX_COMMENTS_PER_DAY}):\n{comment}"
+            )
         except FloodWaitError as e:
             log.warning("FloodWait: ждём %d сек", e.seconds)
+            await notify_admin(f"❌ Ошибка: FloodWait {e.seconds} сек")
             await asyncio.sleep(e.seconds)
         except ChatWriteForbiddenError:
             log.warning("Нет прав на комментарии в [%s], пропускаем", chat_title)
+            await notify_admin(f"❌ Ошибка: нет прав на комментарии в [{chat_title}]")
         except Exception as e:
             log.error("Ошибка отправки комментария: %s", e)
+            await notify_admin(f"❌ Ошибка: {e}")
 
     log.info("Бот запущен. Мониторинг каналов: %s", ", ".join(entity_names))
+    await notify_admin(f"🚀 Бот запущен. Мониторинг: {', '.join(entity_names)}")
     await client.run_until_disconnected()
 
 

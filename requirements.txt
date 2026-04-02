@@ -1,3 +1,4 @@
 telethon
 groq
 aiogram
+httpx
