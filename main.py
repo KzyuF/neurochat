@@ -200,7 +200,7 @@ async def main():
 
         try:
             await client.send_message(
-                discussion_group_id,
+                event.chat_id,
                 comment,
                 comment_to=event.message.id,
             )
