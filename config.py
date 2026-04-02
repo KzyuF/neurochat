@@ -8,8 +8,8 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 
 CHANNELS = []  # загружаются из channels.txt
 
-MIN_DELAY = 10    # для теста (вернуть 300)
-MAX_DELAY = 30    # для теста (вернуть 900)
+MIN_DELAY = 300   # 5 минут между комментариями
+MAX_DELAY = 900   # 15 минут
 
 MAX_COMMENTS_PER_DAY = 25
 
