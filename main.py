@@ -29,8 +29,8 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 comments_today = 0
 last_reset_date = datetime.now().date()
 
-# channel username -> discussion group id
-discussion_groups: dict[str, int] = {}
+# channel entity id -> (channel username, discussion group id)
+channel_map: dict[int, tuple[str, int]] = {}
 
 
 def load_channels() -> list[str]:
@@ -47,9 +47,9 @@ def load_channels() -> list[str]:
     return channels
 
 
-async def join_channels(client: TelegramClient, channels: list[str]) -> list[str]:
-    """Join channels and their discussion groups. Returns list of active channels."""
-    active_channels = []
+async def join_channels(client: TelegramClient, channels: list[str]) -> list:
+    """Join channels and their discussion groups. Returns list of channel entities."""
+    channel_entities = []
 
     for channel in channels:
         try:
@@ -63,7 +63,7 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list[str
                 log.warning("Канал %s приватный, пропускаю", channel)
                 continue
 
-            # Get linked discussion group
+            # Get entity and linked discussion group
             entity = await client.get_entity(channel)
             full = await client(GetFullChannelRequest(entity))
             linked_chat_id = full.full_chat.linked_chat_id
@@ -80,8 +80,9 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list[str
             except UserAlreadyParticipantError:
                 log.info("Уже в группе обсуждения канала %s", channel)
 
-            discussion_groups[channel] = linked_chat_id
-            active_channels.append(channel)
+            channel_map[entity.id] = (channel, linked_chat_id)
+            channel_entities.append(entity)
+            log.info("Канал %s (id=%d) -> группа обсуждения id=%d", channel, entity.id, linked_chat_id)
 
         except FloodWaitError as e:
             log.warning("FloodWait при вступлении: ждём %d сек", e.seconds)
@@ -96,7 +97,7 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list[str
         log.info("Задержка %d сек перед следующим каналом...", delay)
         await asyncio.sleep(delay)
 
-    return active_channels
+    return channel_entities
 
 
 def generate_comment(post_text: str) -> str:
@@ -134,16 +135,29 @@ async def main():
     log.info("Клиент Telegram запущен")
 
     # Join channels and discover discussion groups
-    active_channels = await join_channels(client, channels)
-    if not active_channels:
+    channel_entities = await join_channels(client, channels)
+    if not channel_entities:
         log.error("Нет активных каналов с комментариями")
         return
 
-    log.info("Активные каналы: %s", ", ".join(active_channels))
+    entity_names = [getattr(e, "title", str(e.id)) for e in channel_entities]
+    log.info("Активные каналы: %s", ", ".join(entity_names))
 
-    @client.on(events.NewMessage(chats=active_channels))
+    @client.on(events.NewMessage(chats=channel_entities))
     async def on_new_post(event):
         global comments_today
+
+        # Log every incoming message for debugging
+        log.info(
+            "Получено сообщение из %s: %s",
+            event.chat_id,
+            event.message.text[:50] if event.message.text else "нет текста",
+        )
+
+        # Only process channel posts, not discussion group messages
+        if not event.is_channel or event.is_group:
+            log.info("Пропускаю: не пост канала (is_channel=%s, is_group=%s)", event.is_channel, event.is_group)
+            return
 
         reset_daily_counter()
 
@@ -159,19 +173,13 @@ async def main():
         chat_title = getattr(chat, "title", str(chat.id))
         log.info("Новый пост в [%s]: %s", chat_title, post_text[:80])
 
-        # Find the discussion group for this channel
-        channel_username = None
-        for ch, group_id in discussion_groups.items():
-            ch_entity = await client.get_entity(ch)
-            if ch_entity.id == event.chat_id:
-                channel_username = ch
-                break
-
-        if not channel_username:
-            log.warning("Не найдена группа обсуждения для канала %s", chat_title)
+        # Look up discussion group by channel entity id
+        mapping = channel_map.get(event.chat_id)
+        if not mapping:
+            log.warning("Не найдена группа обсуждения для канала %s (id=%d)", chat_title, event.chat_id)
             return
 
-        discussion_group_id = discussion_groups[channel_username]
+        channel_username, discussion_group_id = mapping
 
         try:
             comment = generate_comment(post_text)
@@ -208,7 +216,7 @@ async def main():
         except Exception as e:
             log.error("Ошибка отправки комментария: %s", e)
 
-    log.info("Бот запущен. Мониторинг каналов: %s", ", ".join(active_channels))
+    log.info("Бот запущен. Мониторинг каналов: %s", ", ".join(entity_names))
     await client.run_until_disconnected()
 
 
