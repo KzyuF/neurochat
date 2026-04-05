@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -271,6 +272,49 @@ def generate_comment(post_text: str) -> str:
     return response.choices[0].message.content
 
 
+def solve_math_captcha(text: str) -> int | None:
+    """Parse and solve a math captcha from message text."""
+    text = text.replace("×", "*").replace("х", "*").replace("X", "*")
+    # Match patterns like "9+3", "5 * 4", "12 - 7"
+    match = re.search(r"(\d+)\s*([+\-*])\s*(\d+)", text)
+    if not match:
+        # Try word-based: "5 плюс 3", "9 минус 2"
+        match = re.search(r"(\d+)\s*(?:плюс|plus)\s*(\d+)", text, re.IGNORECASE)
+        if match:
+            return int(match.group(1)) + int(match.group(2))
+        match = re.search(r"(\d+)\s*(?:минус|minus)\s*(\d+)", text, re.IGNORECASE)
+        if match:
+            return int(match.group(1)) - int(match.group(2))
+        match = re.search(r"(\d+)\s*(?:умножить|multiply)\s*\S*\s*(\d+)", text, re.IGNORECASE)
+        if match:
+            return int(match.group(1)) * int(match.group(2))
+        return None
+    a, op, b = int(match.group(1)), match.group(2), int(match.group(3))
+    if op == "+":
+        return a + b
+    if op == "-":
+        return a - b
+    if op == "*":
+        return a * b
+    return None
+
+
+COLOR_MAP = {
+    "красн": ["🔴", "красн", "red"],
+    "синю": ["🔵", "синю", "синий", "blue"],
+    "голуб": ["🔵", "голуб", "blue"],
+    "зелён": ["🟢", "зелён", "зелен", "green"],
+    "жёлт": ["🟡", "жёлт", "желт", "yellow"],
+    "бел": ["⚪", "бел", "white"],
+    "чёрн": ["⚫", "чёрн", "черн", "black"],
+}
+
+CONFIRM_WORDS = [
+    "я не робот", "не робот", "подтвердить", "войти",
+    "i'm not a bot", "not a bot", "confirm", "verify", "press", "нажми",
+]
+
+
 def reset_daily_counter():
     global comments_today, last_reset_date
     today = datetime.now().date()
@@ -320,6 +364,90 @@ async def main():
                         log.info("Статус канала %s обновлён на 'kicked'", ch_username)
                         break
                 save_channel_status(status)
+
+    # Collect discussion group IDs for captcha handler
+    discussion_group_ids = set(linked_id for _, linked_id in channel_map.values())
+
+    @client.on(events.NewMessage(func=lambda e: e.buttons and not e.is_private))
+    async def on_captcha(event):
+        # Only handle messages in our discussion groups
+        if event.chat_id not in discussion_group_ids and abs(event.chat_id) not in discussion_group_ids:
+            return
+
+        text = event.message.text or event.message.message or ""
+        text_lower = text.lower()
+        chat = await event.get_chat()
+        chat_title = getattr(chat, "title", str(event.chat_id))
+
+        # Collect all button texts
+        all_buttons = []
+        for row in event.buttons:
+            for btn in row:
+                all_buttons.append(btn)
+
+        solved = False
+
+        # Type 1: Math captcha
+        answer = solve_math_captcha(text)
+        if answer is not None:
+            for btn in all_buttons:
+                btn_text = (btn.text or "").strip()
+                if btn_text == str(answer):
+                    try:
+                        await btn.click()
+                        await asyncio.sleep(2)
+                        log.info("🔓 Капча решена в %s (математика: %s=%d)", chat_title, text[:30], answer)
+                        await notify_admin(f"🔓 Автоматически решена капча в {chat_title}: математика ({answer})")
+                        solved = True
+                    except Exception as e:
+                        log.error("Ошибка нажатия кнопки капчи: %s", e)
+                    break
+            if solved:
+                return
+
+        # Type 2: Color captcha
+        for color_key, color_variants in COLOR_MAP.items():
+            if color_key in text_lower:
+                for btn in all_buttons:
+                    btn_text = (btn.text or "").lower()
+                    for variant in color_variants:
+                        if variant.lower() in btn_text:
+                            try:
+                                await btn.click()
+                                await asyncio.sleep(2)
+                                log.info("🔓 Капча решена в %s (цвет: %s)", chat_title, color_key)
+                                await notify_admin(f"🔓 Автоматически решена капча в {chat_title}: цвет ({color_key})")
+                                solved = True
+                            except Exception as e:
+                                log.error("Ошибка нажатия кнопки капчи: %s", e)
+                            break
+                    if solved:
+                        break
+                if solved:
+                    return
+
+        # Type 3: Confirm button
+        for btn in all_buttons:
+            btn_text = (btn.text or "").lower()
+            for word in CONFIRM_WORDS:
+                if word in btn_text:
+                    try:
+                        await btn.click()
+                        await asyncio.sleep(2)
+                        log.info("🔓 Капча решена в %s (подтверждение: %s)", chat_title, btn.text)
+                        await notify_admin(f"🔓 Автоматически решена капча в {chat_title}: подтверждение")
+                        solved = True
+                    except Exception as e:
+                        log.error("Ошибка нажатия кнопки капчи: %s", e)
+                    break
+            if solved:
+                break
+        if solved:
+            return
+
+        # Unknown captcha
+        log.warning("❓ Неизвестная капча в %s: %s", chat_title, text[:100])
+        await notify_admin(f"❓ Неизвестная капча в {chat_title}: {text[:200]}. Решите вручную.")
 
     @client.on(events.NewMessage(chats=channel_entities))
     async def on_new_post(event):
