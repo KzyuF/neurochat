@@ -443,11 +443,18 @@ async def main():
 
     # Startup notification with status counts
     status = load_channel_status()
-    joined_count = sum(1 for v in status.values() if v == "joined")
-    pending_count = sum(1 for v in status.values() if v == "pending")
+    channel_keys = [channel_key(ch) for ch in channels]
+    joined_count = sum(1 for k in channel_keys if status.get(k) == "joined")
+    pending_count = sum(1 for k in channel_keys if status.get(k) == "pending")
+    kicked_count = sum(1 for k in channel_keys if status.get(k) == "kicked")
+    error_count = sum(1 for k in channel_keys if status.get(k) == "error")
     log.info("Бот запущен. Мониторинг каналов: %s", ", ".join(entity_names))
     await notify_admin(
-        f"🚀 Бот запущен. Активных: {joined_count}, ожидают одобрения: {pending_count}"
+        f"🚀 Бот запущен. Каналов: {len(channels)}\n"
+        f"✅ Активных: {joined_count}\n"
+        f"⏳ Ожидают одобрения: {pending_count}\n"
+        f"🚫 Исключён: {kicked_count}\n"
+        f"❌ Ошибка: {error_count}"
     )
 
     # Periodic check for pending channels (every 60 seconds)
