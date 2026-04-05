@@ -111,6 +111,14 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
                 log.info("Вступил в группу обсуждения канала %s (id=%d)", channel, linked_chat_id)
             except UserAlreadyParticipantError:
                 log.info("Уже в группе обсуждения канала %s", channel)
+            except (ChannelPrivateError, ValueError) as e:
+                log.warning("Канал %s — комментарии закрыты, пропускаю (%s)", channel, e)
+                await notify_admin(f"⚠️ Канал {channel} — комментарии закрыты, пропускаю")
+                continue
+            except Exception as e:
+                log.warning("Канал %s — не удалось вступить в группу обсуждения: %s", channel, e)
+                await notify_admin(f"⚠️ Канал {channel} — комментарии закрыты, пропускаю")
+                continue
 
             peer_id = utils.get_peer_id(entity)
             channel_map[peer_id] = (channel, linked_chat_id)

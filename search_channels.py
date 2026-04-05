@@ -2,6 +2,7 @@ import sys
 import json
 import asyncio
 from telethon import TelegramClient, functions
+from telethon.errors import ChannelPrivateError
 from config import API_ID, API_HASH
 
 
@@ -14,7 +15,15 @@ async def search(keyword):
         if hasattr(chat, "broadcast") and chat.broadcast:
             try:
                 full = await client(functions.channels.GetFullChannelRequest(chat))
-                has_comments = bool(full.full_chat.linked_chat_id)
+                linked_chat_id = full.full_chat.linked_chat_id
+                has_comments = False
+                if linked_chat_id:
+                    try:
+                        discussion = await client.get_entity(linked_chat_id)
+                        await client(functions.channels.GetFullChannelRequest(discussion))
+                        has_comments = True
+                    except (ChannelPrivateError, ValueError, Exception):
+                        has_comments = False
                 channels.append({
                     "title": chat.title,
                     "username": chat.username or "",
