@@ -10,7 +10,7 @@ from telethon.errors import (
     FloodWaitError, ChatWriteForbiddenError,
     UserAlreadyParticipantError, ChannelPrivateError, InviteHashExpiredError,
 )
-from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest
+from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest, GetParticipantRequest
 from groq import Groq
 import httpx
 
@@ -70,6 +70,18 @@ def save_channel_status(status: dict):
 def channel_key(username: str) -> str:
     """Normalize @username to bare name for status dict key."""
     return username.strip().lstrip("@")
+
+
+async def check_membership(client: TelegramClient, linked_chat_id: int) -> str:
+    """Check if we are a participant of the discussion group. Returns 'joined' or 'pending'."""
+    try:
+        me = await client.get_me()
+        await client(GetParticipantRequest(channel=linked_chat_id, participant=me))
+        return "joined"
+    except Exception as e:
+        if "USER_NOT_PARTICIPANT" in str(e):
+            return "pending"
+        return "pending"
 
 
 async def notify_admin(text: str):
@@ -154,25 +166,19 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
                 join_error_text = str(e).lower()
                 log.warning("Ошибка JoinChannel для группы обсуждения %s: %s", channel, e)
 
-            # Verify membership
-            joined = False
-            try:
-                await client.get_permissions(linked_chat_id)
-                joined = True
-            except Exception:
-                pass
-
-            if joined:
+            # Verify membership via GetParticipantRequest
+            membership = await check_membership(client, linked_chat_id)
+            if membership == "joined":
                 log.info("✅ Подтверждено: вступил в группу обсуждения %s", channel)
                 status[key] = "joined"
-            elif "requested to join" in join_error_text or "request" in join_error_text:
-                log.info("⏳ Заявка на вступление в группу обсуждения %s подана", channel)
-                status[key] = "pending"
-                await notify_admin(f"⏳ Заявка на вступление в группу обсуждения {channel} подана, ожидаю одобрения")
             else:
-                log.warning("⚠️ Не удалось вступить в группу обсуждения %s", channel)
-                status[key] = "pending" if status.get(key) == "pending" else "error"
-                await notify_admin(f"⚠️ Не удалось вступить в группу обсуждения {channel}")
+                if "requested to join" in join_error_text or "request" in join_error_text:
+                    log.info("⏳ Заявка на вступление в группу обсуждения %s подана", channel)
+                    await notify_admin(f"⏳ Заявка на вступление в группу обсуждения {channel} подана, ожидаю одобрения")
+                else:
+                    log.warning("⚠️ Не удалось вступить в группу обсуждения %s", channel)
+                    await notify_admin(f"⚠️ Не удалось вступить в группу обсуждения {channel}")
+                status[key] = "pending"
 
             save_channel_status(status)
 
@@ -214,14 +220,12 @@ async def check_pending_channels(client: TelegramClient):
         if not mapping:
             continue
         ch_username, linked_id = mapping
-        try:
-            await client.get_permissions(linked_id)
+        membership = await check_membership(client, linked_id)
+        if membership == "joined":
             status[key] = "joined"
             changed = True
             log.info("✅ Заявка в группу обсуждения %s одобрена! Канал активен.", ch_username)
             await notify_admin(f"✅ Заявка в группу обсуждения {ch_username} одобрена! Канал активен.")
-        except Exception:
-            pass
     if changed:
         save_channel_status(status)
 
