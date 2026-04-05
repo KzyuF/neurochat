@@ -294,6 +294,26 @@ async def cmd_limit(message: Message):
     await message.answer(f"✅ Лимит изменён: {limit} комментариев в день")
 
 
+def format_time_ago(iso_date: str) -> str:
+    try:
+        dt = datetime.fromisoformat(iso_date)
+        if dt.tzinfo:
+            now = datetime.now(dt.tzinfo)
+        else:
+            now = datetime.now()
+        delta = now - dt
+        if delta.total_seconds() < 3600:
+            mins = int(delta.total_seconds() / 60)
+            return f"{mins} мин назад"
+        if delta.total_seconds() < 86400:
+            hours = int(delta.total_seconds() / 3600)
+            return f"{hours} ч назад"
+        days = delta.days
+        return f"{days} дн назад"
+    except Exception:
+        return "неизвестно"
+
+
 def format_participants(count: int) -> str:
     if count >= 1_000_000:
         return f"{count / 1_000_000:.1f}M"
@@ -352,9 +372,11 @@ async def cmd_search(message: Message):
         participants = format_participants(ch.get("participants", 0))
         at_username = f"@{username}" if username else "без username"
         already = " (уже добавлен)" if username and normalize_channel(username) in existing else ""
+        last_post = format_time_ago(ch["last_post"]) if ch.get("last_post") else "неизвестно"
         text += (
             f"{i}. 📢 {ch['title']}\n"
-            f"   {at_username} | {participants} подписчиков | ✅ Комментарии{already}\n\n"
+            f"   {at_username} | {participants} подписчиков | ✅ Комментарии{already}\n"
+            f"   Последний пост: {last_post}\n\n"
         )
         if username and not already:
             buttons.append([InlineKeyboardButton(

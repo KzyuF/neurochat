@@ -25,6 +25,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -198,7 +199,7 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
             continue
 
         # Delay between joins
-        delay = random.randint(5, 10)
+        delay = random.randint(2, 3)
         log.info("Задержка %d сек перед следующим каналом...", delay)
         await asyncio.sleep(delay)
 
@@ -403,10 +404,10 @@ async def main():
         f"🚀 Бот запущен. Активных: {joined_count}, ожидают одобрения: {pending_count}"
     )
 
-    # Periodic check for pending channels (every 5 minutes)
+    # Periodic check for pending channels (every 60 seconds)
     async def pending_checker():
         while True:
-            await asyncio.sleep(300)
+            await asyncio.sleep(60)
             try:
                 await check_pending_channels(client)
             except Exception as e:

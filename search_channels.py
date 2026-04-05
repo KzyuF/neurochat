@@ -2,12 +2,14 @@ import sys
 import json
 import shutil
 import asyncio
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from telethon import TelegramClient, functions
 from telethon.errors import ChannelPrivateError
 from config import API_ID, API_HASH
 
 BASE_DIR = Path(__file__).parent
+MAX_POST_AGE_DAYS = 7
 
 
 async def search(keyword):
@@ -21,6 +23,7 @@ async def search(keyword):
     await client.start()
     result = await client(functions.contacts.SearchRequest(q=keyword, limit=30))
     channels = []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_POST_AGE_DAYS)
     for chat in result.chats:
         if hasattr(chat, "broadcast") and chat.broadcast:
             try:
@@ -34,11 +37,29 @@ async def search(keyword):
                         has_comments = True
                     except (ChannelPrivateError, ValueError, Exception):
                         has_comments = False
+
+                # Check last post date
+                last_post = None
+                try:
+                    messages = await client(functions.messages.GetHistoryRequest(
+                        peer=chat, limit=1, offset_id=0, offset_date=None,
+                        add_offset=0, max_id=0, min_id=0, hash=0,
+                    ))
+                    if messages.messages:
+                        last_post = messages.messages[0].date
+                except Exception:
+                    pass
+
+                # Skip channels with no posts or posts older than 7 days
+                if not last_post or last_post < cutoff:
+                    continue
+
                 channels.append({
                     "title": chat.title,
                     "username": chat.username or "",
                     "participants": full.full_chat.participants_count or 0,
                     "comments": has_comments,
+                    "last_post": last_post.isoformat(),
                 })
             except Exception:
                 pass
