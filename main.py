@@ -11,6 +11,7 @@ from telethon.errors import (
     UserAlreadyParticipantError, ChannelPrivateError, InviteHashExpiredError,
 )
 from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest, GetParticipantRequest
+from telethon.tl.types import PeerChannel
 from groq import Groq
 import httpx
 
@@ -99,7 +100,7 @@ async def notify_admin(text: str):
         log.error("Ошибка отправки уведомления админу: %s", e)
 
 
-def load_channels() -> list:
+def load_channels() -> list[str]:
     path = Path(__file__).parent / "channels.txt"
     if not path.exists():
         log.warning("channels.txt не найден")
@@ -108,13 +109,16 @@ def load_channels() -> list:
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
-            # Numeric IDs are loaded as int for Telethon
-            if line.lstrip("-").isdigit():
-                channels.append(int(line))
-            else:
-                channels.append(line)
+            channels.append(line)
     log.info("Загружено каналов: %d", len(channels))
     return channels
+
+
+async def resolve_channel(client: TelegramClient, channel: str):
+    """Resolve channel by username or numeric ID (using PeerChannel)."""
+    if channel.lstrip("-").isdigit():
+        return await client.get_entity(PeerChannel(int(channel)))
+    return await client.get_entity(channel)
 
 
 async def join_channels(client: TelegramClient, channels: list[str]) -> list:
@@ -129,7 +133,7 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
         try:
             # For channels already joined or pending — just resolve entity and map
             if existing_status in ("joined", "pending"):
-                entity = await client.get_entity(channel)
+                entity = await resolve_channel(client, channel)
                 full = await client(GetFullChannelRequest(entity))
                 linked_chat_id = full.full_chat.linked_chat_id
                 if not linked_chat_id:
@@ -145,8 +149,9 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
                 continue
 
             # New channel — full join flow
+            entity = await resolve_channel(client, channel)
             try:
-                await client(JoinChannelRequest(channel))
+                await client(JoinChannelRequest(entity))
                 log.info("Вступил в канал %s", channel)
             except UserAlreadyParticipantError:
                 log.info("Уже в канале %s", channel)
@@ -156,8 +161,7 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
                 save_channel_status(status)
                 continue
 
-            # Get entity and linked discussion group
-            entity = await client.get_entity(channel)
+            # Get linked discussion group
             full = await client(GetFullChannelRequest(entity))
             linked_chat_id = full.full_chat.linked_chat_id
 
