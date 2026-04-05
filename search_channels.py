@@ -57,6 +57,7 @@ async def search(keyword):
                 channels.append({
                     "title": chat.title,
                     "username": chat.username or "",
+                    "channel_id": chat.id,
                     "participants": full.full_chat.participants_count or 0,
                     "comments": has_comments,
                     "last_post": last_post.isoformat(),

@@ -363,26 +363,41 @@ async def cmd_search(message: Message):
         )
         return
 
-    existing = [normalize_channel(ch) for ch in load_channels()]
+    existing = load_channels()
+    existing_normalized = [normalize_channel(ch) for ch in existing if not ch.lstrip("-").isdigit()]
+    existing_ids = [ch.strip() for ch in existing if ch.lstrip("-").isdigit()]
 
     text = f'🔍 Найдено каналов с комментариями по "{keyword}":\n\n'
     buttons = []
     for i, ch in enumerate(with_comments[:10], 1):
         username = ch.get("username", "")
+        channel_id = ch.get("channel_id", "")
         participants = format_participants(ch.get("participants", 0))
-        at_username = f"@{username}" if username else "без username"
-        already = " (уже добавлен)" if username and normalize_channel(username) in existing else ""
+        at_username = f"@{username}" if username else f"ID:{channel_id}"
+        # Check if already added
+        if username and normalize_channel(username) in existing_normalized:
+            already = " (уже добавлен)"
+        elif channel_id and str(channel_id) in existing_ids:
+            already = " (уже добавлен)"
+        else:
+            already = ""
         last_post = format_time_ago(ch["last_post"]) if ch.get("last_post") else "неизвестно"
         text += (
             f"{i}. 📢 {ch['title']}\n"
             f"   {at_username} | {participants} подписчиков | ✅ Комментарии{already}\n"
             f"   Последний пост: {last_post}\n\n"
         )
-        if username and not already:
-            buttons.append([InlineKeyboardButton(
-                text=f"➕ Добавить @{username}",
-                callback_data=f"add_channel:{username}",
-            )])
+        if not already:
+            if username:
+                buttons.append([InlineKeyboardButton(
+                    text=f"➕ Добавить @{username}",
+                    callback_data=f"add_channel:{username}",
+                )])
+            elif channel_id:
+                buttons.append([InlineKeyboardButton(
+                    text=f"➕ Добавить {ch['title'][:30]}",
+                    callback_data=f"add_channel_id:{channel_id}",
+                )])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
@@ -408,6 +423,28 @@ async def on_add_channel_callback(callback: CallbackQuery):
     await callback.answer(f"✅ @{username} добавлен")
     await callback.message.answer(
         f"✅ Канал @{username} добавлен в channels.txt. Перезапустите бота командой /restart"
+    )
+
+
+@dp.callback_query(F.data.startswith("add_channel_id:"))
+async def on_add_channel_id_callback(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    channel_id = callback.data.split(":", 1)[1]
+    channels = load_channels()
+    existing_ids = [ch.strip() for ch in channels if ch.lstrip("-").isdigit()]
+
+    if channel_id in existing_ids:
+        await callback.answer(f"Канал ID:{channel_id} уже в списке", show_alert=True)
+        return
+
+    channels.append(channel_id)
+    save_channels(channels)
+    await callback.answer(f"✅ Канал ID:{channel_id} добавлен")
+    await callback.message.answer(
+        f"✅ Канал (ID:{channel_id}) добавлен в channels.txt. Перезапустите бота командой /restart"
     )
 
 

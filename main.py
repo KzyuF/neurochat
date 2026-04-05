@@ -68,9 +68,11 @@ def save_channel_status(status: dict):
     STATUS_FILE.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def channel_key(username: str) -> str:
-    """Normalize @username to bare name for status dict key."""
-    return username.strip().lstrip("@")
+def channel_key(channel) -> str:
+    """Normalize channel identifier to a key for status dict."""
+    if isinstance(channel, int):
+        return str(channel)
+    return str(channel).strip().lstrip("@")
 
 
 async def check_membership(client: TelegramClient, linked_chat_id: int) -> str:
@@ -97,7 +99,7 @@ async def notify_admin(text: str):
         log.error("Ошибка отправки уведомления админу: %s", e)
 
 
-def load_channels() -> list[str]:
+def load_channels() -> list:
     path = Path(__file__).parent / "channels.txt"
     if not path.exists():
         log.warning("channels.txt не найден")
@@ -106,7 +108,11 @@ def load_channels() -> list[str]:
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
-            channels.append(line)
+            # Numeric IDs are loaded as int for Telethon
+            if line.lstrip("-").isdigit():
+                channels.append(int(line))
+            else:
+                channels.append(line)
     log.info("Загружено каналов: %d", len(channels))
     return channels
 
