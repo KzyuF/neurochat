@@ -120,7 +120,7 @@ async def cmd_channels(message: Message):
         await message.answer("Список каналов пуст.")
         return
     status = load_channel_status()
-    status_icons = {"joined": "✅ Активен", "pending": "⏳ Ожидает одобрения", "error": "❌ Ошибка"}
+    status_icons = {"joined": "✅ Активен", "pending": "⏳ Ожидает одобрения", "error": "❌ Ошибка", "kicked": "🚫 Исключён"}
     lines = []
     for i, ch in enumerate(channels, 1):
         key = ch.strip().lstrip("@")

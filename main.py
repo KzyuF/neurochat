@@ -291,6 +291,26 @@ async def main():
     entity_names = [getattr(e, "title", str(e.id)) for e in channel_entities]
     log.info("Активные каналы: %s", ", ".join(entity_names))
 
+    @client.on(events.ChatAction)
+    async def on_chat_action(event):
+        if event.user_kicked or event.user_left:
+            me = await client.get_me()
+            if event.user_id == me.id:
+                chat = await event.get_chat()
+                title = getattr(chat, "title", "Неизвестный чат")
+                username = getattr(chat, "username", "")
+                log.warning("🚫 Исключён из чата: %s (@%s)", title, username)
+                await notify_admin(f"🚫 Вас исключили из чата: {title} (@{username})")
+                # Update status for matching channel
+                status = load_channel_status()
+                for key, (ch_username, linked_id) in list(channel_map.items()):
+                    ch_key = channel_key(ch_username)
+                    if key == event.chat_id or linked_id == event.chat_id:
+                        status[ch_key] = "kicked"
+                        log.info("Статус канала %s обновлён на 'kicked'", ch_username)
+                        break
+                save_channel_status(status)
+
     @client.on(events.NewMessage(chats=channel_entities))
     async def on_new_post(event):
         global comments_today
@@ -336,12 +356,15 @@ async def main():
 
         channel_username, discussion_group_id = mapping
 
-        # Skip channels with pending status
+        # Skip channels with pending or kicked status
         key = channel_key(channel_username)
         ch_status = load_channel_status().get(key)
         if ch_status == "pending":
             log.info("⏳ Канал %s ожидает одобрения заявки, комментарий пропущен", channel_username)
             await notify_admin(f"⏳ Канал {channel_username} ожидает одобрения заявки, комментарий пропущен")
+            return
+        if ch_status == "kicked":
+            log.info("🚫 Канал %s — исключены, комментарий пропущен", channel_username)
             return
 
         try:
@@ -381,7 +404,13 @@ async def main():
                 )
             except Exception as retry_err:
                 log.error("Повторная отправка не удалась в [%s]: %s", chat_title, retry_err)
-                await notify_admin(f"❌ Ошибка: нет прав на комментарии в [{chat_title}]")
+                await notify_admin(
+                    f"⚠️ Не могу комментировать в [{chat_title}] — нет доступа. Возможно исключили."
+                )
+                # Mark as kicked
+                status = load_channel_status()
+                status[channel_key(channel_username)] = "kicked"
+                save_channel_status(status)
                 return
         except FloodWaitError as e:
             log.warning("FloodWait: ждём %d сек", e.seconds)
