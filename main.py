@@ -104,21 +104,21 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
                 log.warning("Канал %s не имеет комментариев, пропускаю", channel)
                 continue
 
-            # Join discussion group
+            # Join discussion group via GetDiscussionMessageRequest
             try:
-                discussion_entity = await client.get_entity(linked_chat_id)
-                await client(JoinChannelRequest(discussion_entity))
-                log.info("Вступил в группу обсуждения канала %s (id=%d)", channel, linked_chat_id)
-            except UserAlreadyParticipantError:
-                log.info("Уже в группе обсуждения канала %s", channel)
-            except (ChannelPrivateError, ValueError) as e:
-                log.warning("Канал %s — комментарии закрыты, пропускаю (%s)", channel, e)
-                await notify_admin(f"⚠️ Канал {channel} — комментарии закрыты, пропускаю")
-                continue
+                messages = await client(functions.messages.GetHistoryRequest(
+                    peer=entity, limit=1, offset_id=0, offset_date=None,
+                    add_offset=0, max_id=0, min_id=0, hash=0,
+                ))
+                if messages.messages:
+                    await client(functions.messages.GetDiscussionMessageRequest(
+                        peer=entity, msg_id=messages.messages[0].id,
+                    ))
+                    log.info("Вступил в группу обсуждения канала %s через открытие комментариев", channel)
+                else:
+                    log.info("Канал %s пуст, не удалось открыть комментарии", channel)
             except Exception as e:
-                log.warning("Канал %s — не удалось вступить в группу обсуждения: %s", channel, e)
-                await notify_admin(f"⚠️ Канал {channel} — комментарии закрыты, пропускаю")
-                continue
+                log.warning("Не удалось открыть комментарии в %s: %s (попробую комментировать без вступления)", channel, e)
 
             peer_id = utils.get_peer_id(entity)
             channel_map[peer_id] = (channel, linked_chat_id)
@@ -252,34 +252,50 @@ async def main():
                 comment,
                 comment_to=event.message.id,
             )
-            comments_today += 1
-            log.info(
-                "Комментарий опубликован в [%s] (%d/%d за день)",
-                chat_title, comments_today, MAX_COMMENTS_PER_DAY,
-            )
-            # Update stats
-            stats = load_stats()
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            if stats.get("today") != today_str:
-                stats["today"] = today_str
-                stats["today_count"] = 0
-            stats["today_count"] += 1
-            stats["total_count"] = stats.get("total_count", 0) + 1
-            stats["last_comment"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            save_stats(stats)
-            await notify_admin(
-                f"✅ Комментарий опубликован в [{chat_title}] ({comments_today}/{MAX_COMMENTS_PER_DAY}):\n{comment}"
-            )
+        except ChatWriteForbiddenError:
+            # Try joining discussion group via GetDiscussionMessageRequest and retry
+            log.warning("Нет прав в [%s], пробую вступить через открытие комментариев...", chat_title)
+            try:
+                await client(functions.messages.GetDiscussionMessageRequest(
+                    peer=event.chat_id, msg_id=event.message.id,
+                ))
+                await client.send_message(
+                    event.chat_id,
+                    comment,
+                    comment_to=event.message.id,
+                )
+            except Exception as retry_err:
+                log.error("Повторная отправка не удалась в [%s]: %s", chat_title, retry_err)
+                await notify_admin(f"❌ Ошибка: нет прав на комментарии в [{chat_title}]")
+                return
         except FloodWaitError as e:
             log.warning("FloodWait: ждём %d сек", e.seconds)
             await notify_admin(f"❌ Ошибка: FloodWait {e.seconds} сек")
             await asyncio.sleep(e.seconds)
-        except ChatWriteForbiddenError:
-            log.warning("Нет прав на комментарии в [%s], пропускаем", chat_title)
-            await notify_admin(f"❌ Ошибка: нет прав на комментарии в [{chat_title}]")
+            return
         except Exception as e:
             log.error("Ошибка отправки комментария: %s", e)
             await notify_admin(f"❌ Ошибка: {e}")
+            return
+
+        comments_today += 1
+        log.info(
+            "Комментарий опубликован в [%s] (%d/%d за день)",
+            chat_title, comments_today, MAX_COMMENTS_PER_DAY,
+        )
+        # Update stats
+        stats = load_stats()
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        if stats.get("today") != today_str:
+            stats["today"] = today_str
+            stats["today_count"] = 0
+        stats["today_count"] += 1
+        stats["total_count"] = stats.get("total_count", 0) + 1
+        stats["last_comment"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        save_stats(stats)
+        await notify_admin(
+            f"✅ Комментарий в [{chat_title}] ({comments_today}/{MAX_COMMENTS_PER_DAY}):\n{comment}"
+        )
 
     log.info("Бот запущен. Мониторинг каналов: %s", ", ".join(entity_names))
     await notify_admin(f"🚀 Бот запущен. Мониторинг: {', '.join(entity_names)}")
