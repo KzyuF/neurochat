@@ -1,13 +1,23 @@
 import sys
 import json
+import shutil
 import asyncio
+from pathlib import Path
 from telethon import TelegramClient, functions
 from telethon.errors import ChannelPrivateError
 from config import API_ID, API_HASH
 
+BASE_DIR = Path(__file__).parent
+
 
 async def search(keyword):
-    client = TelegramClient("neurochat_session", API_ID, API_HASH)
+    # Copy main session to avoid blocking the running client
+    main_session = BASE_DIR / "neurochat_session.session"
+    search_session = BASE_DIR / "search_session.session"
+    if main_session.exists():
+        shutil.copy2(main_session, search_session)
+
+    client = TelegramClient(str(BASE_DIR / "search_session"), API_ID, API_HASH)
     await client.start()
     result = await client(functions.contacts.SearchRequest(q=keyword, limit=30))
     channels = []
