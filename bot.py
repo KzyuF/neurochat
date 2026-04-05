@@ -7,7 +7,7 @@ from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 BOT_TOKEN = "8398181888:AAGRkEhnJv1AcFFyiUBtnKTMN04pB0eLJwo"
 ADMIN_ID = 706575799
@@ -95,7 +95,8 @@ async def cmd_start(message: Message):
         "/resume — возобновить комментирование\n"
         "/delay min max — изменить задержку\n"
         "/prompt текст — изменить промпт\n"
-        "/limit число — изменить лимит комментариев",
+        "/limit число — изменить лимит комментариев\n"
+        "/search слово — поиск каналов с комментариями",
         parse_mode="HTML",
     )
 
@@ -274,6 +275,101 @@ async def cmd_limit(message: Message):
     config_text = re.sub(r"MAX_COMMENTS_PER_DAY\s*=\s*\d+", f"MAX_COMMENTS_PER_DAY = {limit}", config_text)
     CONFIG_FILE.write_text(config_text, encoding="utf-8")
     await message.answer(f"✅ Лимит изменён: {limit} комментариев в день")
+
+
+def format_participants(count: int) -> str:
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1_000:
+        return f"{count / 1_000:.1f}K"
+    return str(count)
+
+
+@dp.message(Command("search"))
+async def cmd_search(message: Message):
+    if not is_admin(message):
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or not args[1].strip():
+        await message.answer("Использование: /search ключевое слово")
+        return
+    keyword = args[1].strip()
+    await message.answer(f"🔍 Ищу каналы по \"{keyword}\"...")
+
+    proc = await asyncio.create_subprocess_exec(
+        "python3", str(BASE_DIR / "search_channels.py"), keyword,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(BASE_DIR),
+    )
+    stdout, stderr = await proc.communicate()
+
+    try:
+        channels_data = json.loads(stdout.decode().strip())
+    except (json.JSONDecodeError, Exception):
+        error_text = stderr.decode().strip() if stderr else "неизвестная ошибка"
+        await message.answer(f"❌ Ошибка поиска: {error_text[:500]}")
+        return
+
+    if not channels_data:
+        await message.answer("Ничего не найдено.")
+        return
+
+    # Filter only channels with comments
+    with_comments = [ch for ch in channels_data if ch.get("comments")]
+    without_comments = [ch for ch in channels_data if not ch.get("comments")]
+
+    if not with_comments:
+        await message.answer(
+            f"По запросу \"{keyword}\" найдено {len(channels_data)} каналов, "
+            "но ни один не поддерживает комментарии."
+        )
+        return
+
+    existing = [normalize_channel(ch) for ch in load_channels()]
+
+    text = f'🔍 Найдено каналов с комментариями по "{keyword}":\n\n'
+    buttons = []
+    for i, ch in enumerate(with_comments[:10], 1):
+        username = ch.get("username", "")
+        participants = format_participants(ch.get("participants", 0))
+        at_username = f"@{username}" if username else "без username"
+        already = " (уже добавлен)" if username and normalize_channel(username) in existing else ""
+        text += (
+            f"{i}. 📢 {ch['title']}\n"
+            f"   {at_username} | {participants} подписчиков | ✅ Комментарии{already}\n\n"
+        )
+        if username and not already:
+            buttons.append([InlineKeyboardButton(
+                text=f"➕ Добавить @{username}",
+                callback_data=f"add_channel:{username}",
+            )])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+@dp.callback_query(F.data.startswith("add_channel:"))
+async def on_add_channel_callback(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    username = callback.data.split(":", 1)[1]
+    channels = load_channels()
+    normalized = [normalize_channel(ch) for ch in channels]
+    channel_entry = f"@{username}"
+
+    if channel_entry in normalized:
+        await callback.answer(f"Канал @{username} уже в списке", show_alert=True)
+        return
+
+    channels.append(channel_entry)
+    save_channels(channels)
+    await callback.answer(f"✅ @{username} добавлен")
+    await callback.message.answer(
+        f"✅ Канал @{username} добавлен в channels.txt. Перезапустите бота командой /restart"
+    )
 
 
 async def run():
