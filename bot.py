@@ -16,6 +16,7 @@ BASE_DIR = Path(__file__).parent
 CHANNELS_FILE = BASE_DIR / "channels.txt"
 CONFIG_FILE = BASE_DIR / "config.py"
 STATS_FILE = BASE_DIR / "stats.json"
+STATUS_FILE = BASE_DIR / "channel_status.json"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +54,15 @@ def save_channels(channels: list[str]):
     for ch in channels:
         content += f"{ch}\n"
     CHANNELS_FILE.write_text(content, encoding="utf-8")
+
+
+def load_channel_status() -> dict:
+    if not STATUS_FILE.exists():
+        return {}
+    try:
+        return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, Exception):
+        return {}
 
 
 def load_stats() -> dict:
@@ -109,7 +119,14 @@ async def cmd_channels(message: Message):
     if not channels:
         await message.answer("Список каналов пуст.")
         return
-    lines = [f"{i+1}. {ch}" for i, ch in enumerate(channels)]
+    status = load_channel_status()
+    status_icons = {"joined": "✅ Активен", "pending": "⏳ Ожидает одобрения", "error": "❌ Ошибка"}
+    lines = []
+    for i, ch in enumerate(channels, 1):
+        key = ch.strip().lstrip("@")
+        st = status.get(key, "—")
+        label = status_icons.get(st, f"❓ {st}")
+        lines.append(f"{i}. {ch} — {label}")
     await message.answer(
         f"📋 <b>Каналы ({len(channels)}):</b>\n" + "\n".join(lines),
         parse_mode="HTML",

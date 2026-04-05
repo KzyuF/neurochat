@@ -38,6 +38,7 @@ last_reset_date = datetime.now().date()
 channel_map: dict[int, tuple[str, int]] = {}
 
 STATS_FILE = Path(__file__).parent / "stats.json"
+STATUS_FILE = Path(__file__).parent / "channel_status.json"
 
 
 def load_stats() -> dict:
@@ -51,6 +52,24 @@ def load_stats() -> dict:
 
 def save_stats(stats: dict):
     STATS_FILE.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_channel_status() -> dict:
+    if STATUS_FILE.exists():
+        try:
+            return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, Exception):
+            pass
+    return {}
+
+
+def save_channel_status(status: dict):
+    STATUS_FILE.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def channel_key(username: str) -> str:
+    """Normalize @username to bare name for status dict key."""
+    return username.strip().lstrip("@")
 
 
 async def notify_admin(text: str):
@@ -82,8 +101,10 @@ def load_channels() -> list[str]:
 async def join_channels(client: TelegramClient, channels: list[str]) -> list:
     """Join channels and their discussion groups. Returns list of channel entities."""
     channel_entities = []
+    status = load_channel_status()
 
     for channel in channels:
+        key = channel_key(channel)
         try:
             # Join the channel
             try:
@@ -93,6 +114,8 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
                 log.info("Уже в канале %s", channel)
             except (ChannelPrivateError, InviteHashExpiredError):
                 log.warning("Канал %s приватный, пропускаю", channel)
+                status[key] = "error"
+                save_channel_status(status)
                 continue
 
             # Get entity and linked discussion group
@@ -102,6 +125,8 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
 
             if not linked_chat_id:
                 log.warning("Канал %s не имеет комментариев, пропускаю", channel)
+                status[key] = "error"
+                save_channel_status(status)
                 continue
 
             # Join discussion group via GetDiscussionMessageRequest + explicit join
@@ -118,6 +143,7 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
                 log.warning("Не удалось открыть комментарии в %s: %s", channel, e)
 
             # Explicitly join discussion group
+            join_error_text = ""
             try:
                 discussion_entity = await client.get_entity(linked_chat_id)
                 await client(JoinChannelRequest(discussion_entity))
@@ -125,6 +151,7 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
             except UserAlreadyParticipantError:
                 log.info("Уже в группе обсуждения канала %s", channel)
             except Exception as e:
+                join_error_text = str(e).lower()
                 log.warning("Ошибка JoinChannel для группы обсуждения %s: %s", channel, e)
 
             # Verify membership
@@ -137,9 +164,17 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
 
             if joined:
                 log.info("✅ Подтверждено: вступил в группу обсуждения %s", channel)
+                status[key] = "joined"
+            elif "requested to join" in join_error_text or "request" in join_error_text:
+                log.info("⏳ Заявка на вступление в группу обсуждения %s подана", channel)
+                status[key] = "pending"
+                await notify_admin(f"⏳ Заявка на вступление в группу обсуждения {channel} подана, ожидаю одобрения")
             else:
-                log.warning("⚠️ Не удалось вступить в группу обсуждения %s, попробую комментировать без вступления", channel)
-                await notify_admin(f"⚠️ Не удалось вступить в группу обсуждения {channel}, попробую комментировать без вступления")
+                log.warning("⚠️ Не удалось вступить в группу обсуждения %s", channel)
+                status[key] = "pending" if status.get(key) == "pending" else "error"
+                await notify_admin(f"⚠️ Не удалось вступить в группу обсуждения {channel}")
+
+            save_channel_status(status)
 
             peer_id = utils.get_peer_id(entity)
             channel_map[peer_id] = (channel, linked_chat_id)
@@ -152,6 +187,8 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
             continue
         except Exception as e:
             log.error("Ошибка при вступлении в %s: %s", channel, e)
+            status[key] = "error"
+            save_channel_status(status)
             continue
 
         # Delay between joins
@@ -160,6 +197,33 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
         await asyncio.sleep(delay)
 
     return channel_entities
+
+
+async def check_pending_channels(client: TelegramClient):
+    """Check if pending channel join requests have been approved."""
+    status = load_channel_status()
+    changed = False
+    for key, st in list(status.items()):
+        if st != "pending":
+            continue
+        mapping = None
+        for peer_id, (ch_username, linked_id) in channel_map.items():
+            if channel_key(ch_username) == key:
+                mapping = (ch_username, linked_id)
+                break
+        if not mapping:
+            continue
+        ch_username, linked_id = mapping
+        try:
+            await client.get_permissions(linked_id)
+            status[key] = "joined"
+            changed = True
+            log.info("✅ Заявка в группу обсуждения %s одобрена! Канал активен.", ch_username)
+            await notify_admin(f"✅ Заявка в группу обсуждения {ch_username} одобрена! Канал активен.")
+        except Exception:
+            pass
+    if changed:
+        save_channel_status(status)
 
 
 def generate_comment(post_text: str) -> str:
@@ -250,6 +314,14 @@ async def main():
 
         channel_username, discussion_group_id = mapping
 
+        # Skip channels with pending status
+        key = channel_key(channel_username)
+        ch_status = load_channel_status().get(key)
+        if ch_status == "pending":
+            log.info("⏳ Канал %s ожидает одобрения заявки, комментарий пропущен", channel_username)
+            await notify_admin(f"⏳ Канал {channel_username} ожидает одобрения заявки, комментарий пропущен")
+            return
+
         try:
             comment = generate_comment(post_text)
             log.info("Сгенерирован комментарий: %s", comment[:80])
@@ -318,8 +390,26 @@ async def main():
             f"✅ Комментарий в [{chat_title}] ({comments_today}/{MAX_COMMENTS_PER_DAY}):\n{comment}"
         )
 
+    # Startup notification with status counts
+    status = load_channel_status()
+    joined_count = sum(1 for v in status.values() if v == "joined")
+    pending_count = sum(1 for v in status.values() if v == "pending")
     log.info("Бот запущен. Мониторинг каналов: %s", ", ".join(entity_names))
-    await notify_admin(f"🚀 Бот запущен. Мониторинг: {', '.join(entity_names)}")
+    await notify_admin(
+        f"🚀 Бот запущен. Активных: {joined_count}, ожидают одобрения: {pending_count}"
+    )
+
+    # Periodic check for pending channels (every 5 minutes)
+    async def pending_checker():
+        while True:
+            await asyncio.sleep(300)
+            try:
+                await check_pending_channels(client)
+            except Exception as e:
+                log.error("Ошибка проверки pending каналов: %s", e)
+
+    asyncio.create_task(pending_checker())
+
     await client.run_until_disconnected()
 
 
