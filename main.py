@@ -104,7 +104,7 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
                 log.warning("Канал %s не имеет комментариев, пропускаю", channel)
                 continue
 
-            # Join discussion group via GetDiscussionMessageRequest
+            # Join discussion group via GetDiscussionMessageRequest + explicit join
             try:
                 messages = await client(functions.messages.GetHistoryRequest(
                     peer=entity, limit=1, offset_id=0, offset_date=None,
@@ -114,11 +114,32 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
                     await client(functions.messages.GetDiscussionMessageRequest(
                         peer=entity, msg_id=messages.messages[0].id,
                     ))
-                    log.info("Вступил в группу обсуждения канала %s через открытие комментариев", channel)
-                else:
-                    log.info("Канал %s пуст, не удалось открыть комментарии", channel)
             except Exception as e:
-                log.warning("Не удалось открыть комментарии в %s: %s (попробую комментировать без вступления)", channel, e)
+                log.warning("Не удалось открыть комментарии в %s: %s", channel, e)
+
+            # Explicitly join discussion group
+            try:
+                discussion_entity = await client.get_entity(linked_chat_id)
+                await client(JoinChannelRequest(discussion_entity))
+                log.info("Вступил в группу обсуждения канала %s (id=%d)", channel, linked_chat_id)
+            except UserAlreadyParticipantError:
+                log.info("Уже в группе обсуждения канала %s", channel)
+            except Exception as e:
+                log.warning("Ошибка JoinChannel для группы обсуждения %s: %s", channel, e)
+
+            # Verify membership
+            joined = False
+            try:
+                await client.get_permissions(linked_chat_id)
+                joined = True
+            except Exception:
+                pass
+
+            if joined:
+                log.info("✅ Подтверждено: вступил в группу обсуждения %s", channel)
+            else:
+                log.warning("⚠️ Не удалось вступить в группу обсуждения %s, попробую комментировать без вступления", channel)
+                await notify_admin(f"⚠️ Не удалось вступить в группу обсуждения {channel}, попробую комментировать без вступления")
 
             peer_id = utils.get_peer_id(entity)
             channel_map[peer_id] = (channel, linked_chat_id)
