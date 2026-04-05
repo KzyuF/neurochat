@@ -16,7 +16,7 @@ import httpx
 
 from config import (
     API_ID, API_HASH, GROQ_API_KEY, GROQ_MODEL,
-    MIN_DELAY, MAX_DELAY, MAX_COMMENTS_PER_DAY, SYSTEM_PROMPT,
+    MIN_DELAY, MAX_DELAY, MAX_COMMENTS_PER_DAY, SYSTEM_PROMPT, SKIP_CHANCE,
 )
 
 logging.basicConfig(
@@ -200,6 +200,12 @@ async def main():
 
         post_text = event.message.text
         if not post_text:
+            return
+
+        # Random skip
+        if random.random() < SKIP_CHANCE:
+            log.info("⏭ Пост пропущен (случайный пропуск)")
+            await notify_admin("⏭ Пост пропущен (случайный пропуск)")
             return
 
         chat = await event.get_chat()

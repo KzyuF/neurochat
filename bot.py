@@ -43,6 +43,11 @@ def load_channels() -> list[str]:
     return channels
 
 
+def normalize_channel(name: str) -> str:
+    """Normalize channel name to @username format."""
+    return "@" + name.strip().lstrip("@")
+
+
 def save_channels(channels: list[str]):
     content = "# Добавьте каналы по одному на строку\n"
     for ch in channels:
@@ -120,8 +125,9 @@ async def cmd_add(message: Message):
         return
     username = args[1].strip().lstrip("@")
     channels = load_channels()
+    normalized = [normalize_channel(ch) for ch in channels]
     channel_entry = f"@{username}"
-    if channel_entry in channels:
+    if channel_entry in normalized:
         await message.answer(f"Канал @{username} уже в списке.")
         return
     channels.append(channel_entry)
@@ -139,12 +145,12 @@ async def cmd_remove(message: Message):
         return
     username = args[1].strip().lstrip("@")
     channels = load_channels()
-    channel_entry = f"@{username}"
-    if channel_entry not in channels:
+    channel_entry = normalize_channel(username)
+    filtered = [ch for ch in channels if normalize_channel(ch) != channel_entry]
+    if len(filtered) == len(channels):
         await message.answer(f"Канал @{username} не найден в списке.")
         return
-    channels.remove(channel_entry)
-    save_channels(channels)
+    save_channels(filtered)
     await message.answer(f"✅ Канал @{username} удалён. Перезапустите бота командой /restart")
 
 
