@@ -118,8 +118,27 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
 
     for channel in channels:
         key = channel_key(channel)
+        existing_status = status.get(key)
+
         try:
-            # Join the channel
+            # For channels already joined or pending — just resolve entity and map
+            if existing_status in ("joined", "pending"):
+                entity = await client.get_entity(channel)
+                full = await client(GetFullChannelRequest(entity))
+                linked_chat_id = full.full_chat.linked_chat_id
+                if not linked_chat_id:
+                    log.warning("Канал %s не имеет комментариев, пропускаю", channel)
+                    status[key] = "error"
+                    save_channel_status(status)
+                    continue
+                peer_id = utils.get_peer_id(entity)
+                channel_map[peer_id] = (channel, linked_chat_id)
+                channel_entities.append(entity)
+                log.info("Канал %s загружен из кэша (статус: %s)", channel, existing_status)
+                await asyncio.sleep(1)
+                continue
+
+            # New channel — full join flow
             try:
                 await client(JoinChannelRequest(channel))
                 log.info("Вступил в канал %s", channel)
@@ -198,10 +217,8 @@ async def join_channels(client: TelegramClient, channels: list[str]) -> list:
             save_channel_status(status)
             continue
 
-        # Delay between joins
-        delay = random.randint(2, 3)
-        log.info("Задержка %d сек перед следующим каналом...", delay)
-        await asyncio.sleep(delay)
+        # Delay between channels
+        await asyncio.sleep(1)
 
     return channel_entities
 
