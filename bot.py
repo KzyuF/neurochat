@@ -45,8 +45,11 @@ def load_channels() -> list[str]:
 
 
 def normalize_channel(name: str) -> str:
-    """Normalize channel name to @username format."""
-    return "@" + name.strip().lstrip("@")
+    """Normalize channel name. Numeric IDs stay as-is, usernames get @ prefix."""
+    name = name.strip()
+    if name.lstrip("-").isdigit():
+        return name
+    return "@" + name.lstrip("@")
 
 
 def save_channels(channels: list[str]):
